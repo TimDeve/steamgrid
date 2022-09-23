@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"io/ioutil"
@@ -10,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	vdf "github.com/TimDeve/valve-vdf-binary"
 )
 
 // Game in a steam library. May or may not be installed.
@@ -102,37 +102,30 @@ func addUnknownGames(user User, games map[string]*Game) {
 // It contains the non-Steam games with names, target (exe location) and
 // tags/categories. To create a grid image we must compute the Steam ID, which
 // is just crc32(target + label) + "02000000", using IEEE standard polynomials.
+
 func addNonSteamGames(user User, games map[string]*Game) {
 	shortcutsVdf := filepath.Join(user.Dir, "config", "shortcuts.vdf")
-	if _, err := os.Stat(shortcutsVdf); err != nil {
-		return
-	}
-	shortcutBytes, err := ioutil.ReadFile(shortcutsVdf)
+	f, err := os.Open(shortcutsVdf)
 	if err != nil {
 		return
 	}
 
-	// The actual binary format is known, but using regexes is way easier than
-	// parsing the entire file. If I run into any problems I'll replace this.
-	gamePattern := regexp.MustCompile("(?i)\x00\x02appid\x00(.{1,4})\x01appname\x00([^\x08]+?)\x00\x01exe\x00([^\x08]+?)\x00\x01.+?\x00tags\x00(?:\x01([^\x08]+?)|)\x08\x08")
-	tagsPattern := regexp.MustCompile("\\d\x00([^\x00\x01\x08]+?)\x00")
-	for _, gameGroups := range gamePattern.FindAllSubmatch(shortcutBytes, -1) {
-		gameID := fmt.Sprint(binary.LittleEndian.Uint32(gameGroups[1]))
-		gameName := gameGroups[2]
+	sx, err := vdf.ParseShortcuts(f)
+	if err != nil {
+		return
+	}
+
+	for _, s := range sx {
+		gameID := s.AppId
+		gameName := s.AppName
 
 		// BigPicture is still using these
-		target := gameGroups[3]
-		uniqueName := bytes.Join([][]byte{target, gameName}, []byte(""))
-		LegacyID := uint64(crc32.ChecksumIEEE(uniqueName)) | 0x80000000
+		target := s.Exe
+		uniqueName := strings.Join([]string{target, gameName}, "")
+		LegacyID := uint64(crc32.ChecksumIEEE([]byte(uniqueName))) | 0x80000000
 
-		game := Game{gameID, string(gameName), []string{}, "", nil, nil, "", true, LegacyID}
-		games[gameID] = &game
-
-		tagsText := gameGroups[4]
-		for _, tagGroups := range tagsPattern.FindAllSubmatch(tagsText, -1) {
-			tag := tagGroups[1]
-			game.Tags = append(game.Tags, string(tag))
-		}
+		game := Game{fmt.Sprint(gameID), gameName, s.Tags, "", nil, nil, "", true, LegacyID}
+		games[fmt.Sprint(gameID)] = &game
 	}
 }
 
